@@ -25,6 +25,13 @@
 #include "box_type.h"
 #include <nav_msgs/OccupancyGrid.h>
 
+struct GridInfo
+{
+  float theta_min;
+  float theta_max;
+  float distance;
+};
+
 class GridMap
 {
 public:
@@ -41,16 +48,27 @@ private:
   double offset_x_;
   double offset_y_;
   double offset_z_;
+  double map_center_x_;
+  double map_center_y_;
+  int grid_center_x_;
+  int grid_center_y_;
+  float occupy_blank_ratio_;
+  float blank_occupy_ratio_;
 
   cv::Mat img_map_;
   std::vector<pcl::PointCloud<pcl::PointXYZI> > cloud_queue_;
   std::vector<Eigen::Affine3d> transform_queue_;
   std::vector<int> vector_map_;
+  std::vector<GridInfo> grid_info_; //保存每个格点相对于原点的角度范围和距离
 
   void mapOperation(cv::Mat& img);
   void setOccupancyGrid(nav_msgs::OccupancyGrid *og);
+  std::vector<GridInfo> initGridInfo(int width, int height, cv::Point origin);
+  cv::Mat toSingleMap(pcl::PointCloud<pcl::PointXYZI>::Ptr cloud);
+  void setOccupyInLine(cv::Mat& img_temp, cv::Point end_point);
   Obstacle getObstacle(std::vector<Vertex> rect);
   std::vector<Obstacle> mapToObstacle(cv::Mat img);
+  std::vector<cv::Point> getPointsInLine(cv::Point pt1, cv::Point pt2);
 
 };
 

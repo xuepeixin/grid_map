@@ -3,6 +3,7 @@
 #include <math.h>
 #include <algorithm>
 #include <map>
+#include <chrono>
 
 #include <Eigen/Core>
 #include <sys/time.h>
@@ -33,7 +34,9 @@ constexpr double CAR_WIDTH = 1.864; //LINCOLN MKZ
 GridMap::GridMap():grid_size_(0),
                   offset_x_(0),
                   offset_y_(0),
-                  offset_z_(0)
+                  offset_z_(0),
+                  map_center_x_(0),
+                  map_center_y_(0)
 {
 
 }
@@ -46,6 +49,8 @@ void GridMap::init(  int width,
                      float grid_size,
                      int queue_size)
 {
+  occupy_blank_ratio_ = 4.0;
+  blank_occupy_ratio_ = 0.25;
   W = width;
   H = height;
   offset_x_ = offset_x;
@@ -55,16 +60,71 @@ void GridMap::init(  int width,
   vector_map_ = std::vector<int>(height * width, 0);
   grid_size_ = grid_size;
   queue_size_ = queue_size;
+
+  grid_info_.resize(W * H);
+  map_center_x_ = (W / 2.0) * grid_size_ - offset_x_; //地图中
+  map_center_y_ = (H / 2.0) * grid_size_ - offset_y_;
+  grid_center_x_ = map_center_x_ / grid_size_;
+  grid_center_y_ = map_center_y_ / grid_size_;
+  
+  grid_info_ = initGridInfo(W, H, cv::Point(map_center_x_/grid_size_, map_center_y_/grid_size_));
+}
+
+// 初始化带有角度和距离信息的空地图
+std::vector<GridInfo> GridMap::initGridInfo(int width, int height, cv::Point origin)
+{
+  std::vector<GridInfo> grid_info(width*height);
+  for(int j = 0; j < height; j++)
+  {
+    for(int i = 0; i < width; i++)
+    {
+      if(j >= origin.y && i >= origin.x)
+      {
+        grid_info[j * width + i].theta_min = atan2(j - origin.y, i - origin.x + 1);
+        grid_info[j * width + i].theta_max = atan2(j - origin.y + 1, i - origin.x);
+        grid_info[j * width + i].distance = sqrt((i - origin.x + 0.5)*(i - origin.x + 0.5) + 
+                                                 (j - origin.y + 0.5)*(j - origin.y + 0.5));
+      }
+      else if(j <= origin.y && i >= origin.x)
+      {
+        grid_info[j * width + i].theta_min = atan2(j - origin.y, i - origin.x );
+        grid_info[j * width + i].theta_max = atan2(j - origin.y + 1, i - origin.x + 1);
+        grid_info[j * width + i].distance = sqrt((i - origin.x + 0.5)*(i - origin.x + 0.5) + 
+                                                 (j - origin.y + 0.5)*(j - origin.y + 0.5));
+      }
+      else if(j >= origin.y && i <= origin.x)
+      {
+        grid_info[j * width + i].theta_min = atan2(j - origin.y + 1, i - origin.x + 1);
+        grid_info[j * width + i].theta_max = atan2(j - origin.y, i - origin.x);
+        grid_info[j * width + i].distance = sqrt((i - origin.x + 0.5)*(i - origin.x + 0.5) + 
+                                                 (j - origin.y + 0.5)*(j - origin.y + 0.5));
+      }
+      else{
+        grid_info[j * width + i].theta_min = atan2(j - origin.y + 1, i - origin.x);
+        grid_info[j * width + i].theta_max = atan2(j - origin.y, i - origin.x + 1);
+        grid_info[j * width + i].distance = sqrt((i - origin.x + 0.5)*(i - origin.x + 0.5) + 
+                                                 (j - origin.y + 0.5)*(j - origin.y + 0.5));
+      }
+    }
+  }
+  
+  return grid_info;
 }
 
 void GridMap::update(pcl::PointCloud<pcl::PointXYZI>::ConstPtr origin_cloud, Eigen::Affine3d transform)
 { 
-  img_map_ = cv::Mat::zeros(H, W, CV_8UC1);
+  auto start = system_clock::now();
+
+  img_map_ = cv::Mat(H, W, CV_32FC1,1);
   vector_map_ = std::vector<int>(H * W, 0);
-
-  double map_center_x = (W / 2.0) * grid_size_ - offset_x_;
-  double map_center_y = (H / 2.0) * grid_size_ - offset_y_;
-
+  // cv::Mat img = cv::Mat::zeros(300,300,CV_8UC1);
+  // std::vector<cv::Point> points = getPointsInLine(cv::Point(1,200), cv::Point(300,1));
+  // for(int i = 0; i < 100; i++)
+  // {
+  //   img.at<uchar>(points[i]) = 255;
+  // }
+  // cv::imshow("11", img);
+  // cv::waitKey(0);
   if(cloud_queue_.size() == queue_size_)
   {
     cloud_queue_.erase(cloud_queue_.begin());
@@ -92,36 +152,142 @@ void GridMap::update(pcl::PointCloud<pcl::PointXYZI>::ConstPtr origin_cloud, Eig
     pcl::PointCloud<pcl::PointXYZI>::Ptr transformed (new pcl::PointCloud<pcl::PointXYZI>);
     pcl::transformPointCloud(cloud_queue_[i], *transformed, delta_trans.matrix());
 
-    cv::Mat img_temp = cv::Mat::zeros(H, W, CV_8UC1);
-    for(int j = 0; j < transformed->points.size(); j++)
+    cv::Mat img_temp = toSingleMap(transformed);
+    for(int q = 0; q < H; q++)
     {
-      // int width;
-      // int height;
-      if (transformed->points[j].z > HEIGHT_LIMIT)
-        continue;
-      if (std::fabs(transformed->points[j].x) < (CAR_LENGTH )&& std::fabs(transformed->points[j].y) < (CAR_WIDTH))
-        continue;
-      int grid_x = (transformed->points[j].x + map_center_x) / grid_size_;
-      int grid_y = (transformed->points[j].y + map_center_y) / grid_size_;
-
-      if(grid_y < H && grid_y >= 0 && grid_x >= 0 && grid_x < W)
+      for(int p = 0; p < W; p++)
       {
-        img_temp.at<uchar>(grid_y, grid_x) +=10;
+        img_map_.at<float>(q,p) = img_map_.at<float>(q,p) * img_temp.at<float>(q,p);
       }
     }
-    mapOperation(img_temp);
     img_map_ += img_temp;
   }
-  mapOperation(img_map_);
 
-  cv::threshold(img_map_, img_map_, 10, 255, cv::THRESH_BINARY);
-  mapToObstacle(img_map_);
+  // 还原为概率分布
+  for(int q = 0; q < H; q++)
+  {
+    for(int p = 0; p < W; p++)
+    {
+      img_map_.at<float>(q,p) = img_map_.at<float>(q,p) / (1 + img_map_.at<float>(q,p));
+    }
+  }
+
   for(int i = 0; i < W; i++)
   {
     for(int j = 0; j < H; j++)
     {
-        vector_map_[j * W + i] = img_map_.at<uchar>(j, i);
+        vector_map_[j * W + i] = img_map_.at<float>(j, i)*100;
     }
+  }
+  auto end = system_clock::now();
+  auto duration = duration_cast<microseconds>(end - start);
+  std::cout <<  "spend" << double(duration.count()) * microseconds::period::num / microseconds::period::den << "s" << endl;
+
+}
+
+std::vector<cv::Point> GridMap::getPointsInLine(cv::Point pt1, cv::Point pt2)
+{
+  std::vector<cv::Point> points_in_line;
+  bool steep = (abs(pt2.y- pt1.y) > abs(pt2.x-pt1.x));
+  if(steep)
+  {
+    swap(pt1.x, pt1.y);
+    swap(pt2.x, pt2.y);
+  }
+  if(pt1.x > pt2.x)
+  {
+    swap(pt1.x, pt2.x);
+    swap(pt1.y, pt2.y);
+  }
+  int deltax = pt2.x - pt1.x;
+  int deltay = abs(pt2.y - pt1.y);
+  int error = deltax / 2;
+  int ystep;
+  int y = pt1.y;
+  if(pt1.y < pt2.y)
+  {
+    ystep = 1;
+  }
+  else{
+    ystep = -1;
+  }
+  for(int x = pt1.x; x < pt2.x; x++)
+  {
+   if(steep)
+   {
+      points_in_line.push_back(cv::Point(y,x));
+   } 
+   else{
+      points_in_line.push_back(cv::Point(x,y));    
+   }
+
+   error = error - deltay;
+   if(error < 0)
+   {
+     y = y + ystep;
+     error = error + deltax;
+   }
+  }
+
+  return points_in_line;
+}
+
+cv::Mat GridMap::toSingleMap(pcl::PointCloud<pcl::PointXYZI>::Ptr cloud)
+{
+  cv::Mat img_temp(H, W, CV_32FC1,1);
+  for(int j = 0; j < cloud->points.size(); j++)
+  {
+    // int width;
+    // int height;
+    if (cloud->points[j].z > HEIGHT_LIMIT)
+      continue;
+    if (std::fabs(cloud->points[j].x) < (CAR_LENGTH )&& std::fabs(cloud->points[j].y) < (CAR_WIDTH))
+      continue;
+    int grid_x = (cloud->points[j].x + map_center_x_) / grid_size_;
+    int grid_y = (cloud->points[j].y + map_center_y_) / grid_size_;
+
+    if(grid_y < H && grid_y >= 0 && grid_x >= 0 && grid_x < W)
+    {
+      img_temp.at<float>(grid_y, grid_x) = occupy_blank_ratio_;
+    }
+  }
+
+  for(int i = 0; i < H; i++)
+  {
+    setOccupyInLine(img_temp, cv::Point(0,i));
+    setOccupyInLine(img_temp, cv::Point(W-1, i));
+  }
+  for(int i = 0; i < W; i++)
+  {
+    setOccupyInLine(img_temp, cv::Point(i, 0));
+    setOccupyInLine(img_temp, cv::Point(i, H-1));
+  }
+  return img_temp;
+}
+
+void GridMap::setOccupyInLine(cv::Mat& img_temp, cv::Point end_point)
+{
+  std::vector<cv::Point> points_in_line = getPointsInLine(end_point, 
+                                                               cv::Point(grid_center_x_, grid_center_y_));                    
+  int len = points_in_line.size();
+  int inc_count = 0;
+  int dec_count = len-1;
+  if(points_in_line[0] != cv::Point(grid_center_x_, grid_center_y_))
+  {
+    std::reverse(points_in_line.begin(),points_in_line.end());
+  }
+  while(dec_count >= 0)
+  {
+    if(img_temp.at<float>(points_in_line[dec_count]) == occupy_blank_ratio_) break;
+    img_temp.at<float>(points_in_line[dec_count]) = 1;
+    dec_count--;
+  }
+
+  while(inc_count < len)
+  {
+    if(img_temp.at<float>(points_in_line[inc_count]) == occupy_blank_ratio_) break;
+    img_temp.at<float>(points_in_line[inc_count]) = blank_occupy_ratio_;
+    inc_count++;
   }
 }
 
@@ -224,3 +390,4 @@ std::vector<Obstacle> GridMap::mapToObstacle(cv::Mat img)
   cv::waitKey(10);
   return obstacles;
 } 
+

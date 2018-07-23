@@ -57,6 +57,7 @@ void lidar_callback(const sensor_msgs::PointCloud2::ConstPtr& ns1,
                     const sensor_msgs::PointCloud2::ConstPtr& ns3,
                     const nav_msgs::Odometry::ConstPtr &gps_trans)
 {
+  auto start = system_clock::now();
   pcl::PointCloud<pcl::PointXYZI>::Ptr scan1_(new pcl::PointCloud<pcl::PointXYZI>());
   pcl::PointCloud<pcl::PointXYZI>::Ptr scan2_(new pcl::PointCloud<pcl::PointXYZI>());
   pcl::PointCloud<pcl::PointXYZI>::Ptr scan3_(new pcl::PointCloud<pcl::PointXYZI>());
@@ -83,7 +84,6 @@ void lidar_callback(const sensor_msgs::PointCloud2::ConstPtr& ns1,
   *scan = *scan1 + *scan2;
   *scan = *scan + *scan3;
   *scan_two = *scan1 + *scan2;
-
   *scan = removePointsByRange(*scan, 0, 50.0);
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr removeground_scan_ptr(new pcl::PointCloud<pcl::PointXYZI>());
@@ -102,6 +102,7 @@ void lidar_callback(const sensor_msgs::PointCloud2::ConstPtr& ns1,
   Eigen::Affine3d R(rotation.toRotationMatrix());
   Eigen::Affine3d T(translation);
   Eigen::Affine3d transform = T*R;
+
   // std::cout<<"transform: \n" << transform.matrix()<<std::endl;
   if(last_frame_->points.size() != 0)
   {
@@ -132,27 +133,30 @@ void lidar_callback(const sensor_msgs::PointCloud2::ConstPtr& ns1,
   }
   else{
     transform_last_ = transform;
-    grid_map->init(1000, 1000, 0, 0, 0, 0.1, 1);
+    grid_map->init(400, 400, 0, 0, 0, 0.25, 1);
     grid_map->update(removeground_scan_ptr, transform);
   }
   *last_frame_ = *removeground_scan_ptr;
 
   nav_msgs::OccupancyGrid og = grid_map->toNavMsg();
   og.header = ns3->header;
-  og.header.frame_id = "base_footprint";
+  og.header.frame_id = "vehicle/base_footprint";
   costmap_pub_.publish(og);
 
-  cv::Mat img = grid_map->toImg();
+  // cv::Mat img = grid_map->toImg();
+  // cv::Mat img1;
+  // img.convertTo(img1,CV_8U,255);
   // cv::namedWindow("_", CV_WINDOW_NORMAL);
-  // cv::imshow("_", img);
-  // cv::waitKey(10);
+  // cv::imshow("_", img1);
+  // cv::waitKey(50);
 
+  auto end = system_clock::now();
+  auto duration = duration_cast<microseconds>(end - start);
+  std::cout <<  "spend" << double(duration.count()) * microseconds::period::num / microseconds::period::den << "s" << endl;
   // *last_frame_ = *grid;
 
 
-  auto start = system_clock::now();
-  auto end = system_clock::now();
-  auto duration = duration_cast<microseconds>(end - start);
+
   // cout <<  "花费了spend" << double(duration.count()) * microseconds::period::num / microseconds::period::den << "ssss秒" << endl;
 
 
@@ -174,9 +178,9 @@ int main(int argc, char **argv)
   // filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("/filtered_points", 10);
   costmap_pub_ = nh.advertise<nav_msgs::OccupancyGrid>("realtime_cost_map", 10);
 
-  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub1(nh, "/lidar/vlp16_right/PointCloud2", 1);
-  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub2(nh,"/lidar/vlp16_left/PointCloud2", 1);
-  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub3(nh,"/lidar/vlp32_middle/PointCloud2", 1);
+  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub1(nh, "/lidar/vlp16_right/PointCloud2", 5);
+  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub2(nh,"/lidar/vlp16_left/PointCloud2", 5);
+  message_filters::Subscriber<sensor_msgs::PointCloud2> cloud_sub3(nh,"/lidar/vlp32_middle/PointCloud2", 5);
   message_filters::Subscriber<nav_msgs::Odometry> gps_trans(nh, "/pioneer_sensors/EKF_Localization_RS232/filteredodometry", 5);
 
   typedef sync_policies::ApproximateTime<sensor_msgs::PointCloud2, sensor_msgs::PointCloud2, sensor_msgs::PointCloud2, nav_msgs::Odometry> MySyncPolicy;
